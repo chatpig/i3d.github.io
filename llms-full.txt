@@ -1,0 +1,272 @@
+# Image to 3D game asset — complete guide for AI agents
+
+> One picture in, a textured 3D mesh out. The model is TRELLIS.2-4B, packed as
+> a single GGUF file and run locally with the `ggk` or `gguf-core` Python
+> package. Both ship the same diffusion engine, which runs the model and, with
+> `--serve`, puts it behind an OpenAI-style endpoint: `POST /v1/images/edits`.
+> The request carries the image; the response body is the mesh file.
+
+This file is the full, self-contained reference. Everything an agent needs to
+install the runtime, start the server and turn an image into a 3D model is
+below. No JavaScript, login or API key is required to read it.
+
+## Facts
+
+- Task: image to 3D. Input: one picture of one object (PNG, JPEG, WebP or BMP).
+  Output: a triangle mesh with per-vertex base colour, metallic and roughness,
+  as `.glb` (default), `.ply` or `.obj`. There is no text prompt.
+- Model file (GGUF), one local file passed by path. It holds the whole
+  pipeline: image encoder, flow transformers and decoders:
+  `trellis2-4b-nvfp4.gguf` — NVFP4 weights, about 5.65 GB.
+- Model files: https://huggingface.co/gguf-org/trellis2-4b-gguf
+- Original model: https://github.com/microsoft/TRELLIS.2
+- Runtime: `ggk` (https://github.com/gguf-io/gk) or `gguf-core`
+  (https://github.com/calcuis/gguf-core). Same engine, different command name:
+  `ggk` vs `gguf`. Everything below works with either; swap the first word.
+  The 3D server is in `ggk` 1.1.4 and newer and in `gguf-core` releases after
+  1.0.2. If `--serve` does not start a server and the command asks for
+  `--ref-image` instead, the runtime is too old: upgrade it.
+- Default server address: `http://127.0.0.1:8888`.
+- Hardware: a GPU with 6 GB is enough for the `512` pipeline (about 80 s per
+  model on an RTX 4050 Laptop). CPU only works but takes most of an hour.
+- One model is generated at a time; concurrent requests queue.
+- The response is sent when the mesh is finished. Nothing is streamed and there
+  is no progress endpoint: the client simply waits.
+
+## 1. Install the runtime
+
+Python 3.8 or newer. The install compiles the engine (CPU by default, Metal on
+macOS). GPU backends are opt-in through an environment variable at install
+time, and this model wants one.
+
+```bash
+GGK_CUDA=1 pip install ggk      # NVIDIA
+GGK_HIP=1 pip install ggk       # AMD ROCm
+GGK_VULKAN=1 pip install ggk    # Vulkan
+pip install ggk                 # CPU only
+```
+
+`gguf-core` installs the same way: `GGK_CUDA=1 pip install gguf-core`.
+On Windows cmd, set the variable first: `set GGK_CUDA=1` then `pip install ggk`.
+
+## 2. Get the model file
+
+Download `trellis2-4b-nvfp4.gguf` from
+https://huggingface.co/gguf-org/trellis2-4b-gguf. The commands below assume it is
+in the current directory.
+
+## 3. Start the server
+
+```bash
+ggk -m trellis2-4b-nvfp4.gguf --serve --port 8888
+```
+
+With `gguf-core` the same line starts with `gguf -m`. The launcher form,
+`ggk server engine -- --model trellis2-4b-nvfp4.gguf --port 8888`, starts the
+same server.
+
+Options (all optional). Everything except the first five is the default of
+each request and can be overridden per request:
+
+| option | meaning |
+| --- | --- |
+| `--serve` | serve over HTTP instead of writing one file (required for the server) |
+| `--host <addr>` | listen address, default `127.0.0.1`; `0.0.0.0` for every interface |
+| `--port <n>` | default `8888` |
+| `--api-key <key>` | require `Authorization: Bearer <key>` (or `X-Api-Key: <key>`) |
+| `--alias <name>` | model id reported by `/v1/models` (default: the file name) |
+| `--mesh-pipeline <p>` | `512`, `1024`, `1024_cascade` or `1536_cascade`; default: `1024_cascade` on a device with 11 GB or more, `512` otherwise |
+| `--mesh-background <m>` | `auto` (default) or `keep` |
+| `--mesh-no-texture` | skip the material stages, return the bare shape |
+| `--seed <n>` | default seed (42); `-1` = a new take for every request |
+| `--steps <n>` | sampling steps per stage (the model's own value is 12) |
+| `--cfg-scale <x>` | guidance of the structure and shape stages (7.5) |
+| `--backend cpu` | run on the CPU only |
+
+The server is ready as soon as it logs `mesh server: endpoint: POST
+/v1/images/edits`, and `GET /health` answers `{"status":"ok"}`. Nothing is
+loaded at start: the stages of the pipeline load one after another for each
+request and give their memory back, which is what lets 4B parameters run in
+6 GB.
+
+## 4. Turn a picture into a model
+
+```bash
+curl -f http://127.0.0.1:8888/v1/images/edits \
+  -F image=@sheep.png \
+  --output sheep.glb
+```
+
+The response body is the mesh file itself (not JSON). Save the bytes. Keep the
+`-f`: without it a failed request writes the JSON error message into
+`sheep.glb`. Do not set a short timeout; see Timings.
+
+The same request as JSON, with the picture as base64. Build the body in a
+file, because a base64 image is too long for a command line on Windows:
+
+```bash
+python -c "import base64, json; json.dump({'image': base64.b64encode(open('sheep.png','rb').read()).decode(), 'seed': 7}, open('request.json','w'))"
+curl -f http://127.0.0.1:8888/v1/images/edits \
+  -H "Content-Type: application/json" -d @request.json --output sheep.glb
+```
+
+Python, standard library only:
+
+```python
+import base64, json, urllib.request
+
+image = base64.b64encode(open("sheep.png", "rb").read()).decode()
+req = urllib.request.Request(
+    "http://127.0.0.1:8888/v1/images/edits",
+    data=json.dumps({"image": image, "seed": 7}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+with urllib.request.urlopen(req, timeout=1800) as res, open("sheep.glb", "wb") as f:
+    f.write(res.read())
+```
+
+OpenAI SDK (the endpoint has the shape of OpenAI's image edit). Ask for
+`b64_json`, since the SDK expects a JSON answer:
+
+```python
+import base64
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8888/v1", api_key="not-needed", timeout=1800)
+result = client.images.edit(model="trellis2", image=open("sheep.png", "rb"),
+                            prompt="", response_format="b64_json")
+open("sheep.glb", "wb").write(base64.b64decode(result.data[0].b64_json))
+```
+
+### Request fields — `POST /v1/images/edits`
+
+The body is a `multipart/form-data` form with the picture as a file part, or
+JSON (`Content-Type: application/json`) with the picture as base64. The field
+names are the same in both.
+
+| field | type | meaning |
+| --- | --- | --- |
+| `image` | file / string, required | the picture: PNG, JPEG, WebP or BMP, 64 megapixels at most. A file part in a form (`image` or `image[]`); in JSON its base64, with or without a `data:` URI prefix. OpenAI's JSON spelling `"images": [{"image_url": "data:..."}]` is read too. URLs are NOT fetched: send the bytes. Only the first image is used |
+| `mask` | file / string | the subject mask: white where the object is, the same size as the image |
+| `pipeline` | string | `512`, `1024`, `1024_cascade`, `1536_cascade` or `auto` (by device memory) |
+| `output_format` | string | `glb` (default), `ply` or `obj` |
+| `response_format` | string | leave it out to get the mesh file as the response body. `b64_json` returns JSON instead (below). `glb` / `ply` / `obj` here is a shorthand for `output_format` |
+| `seed` | integer | default 42, so the same picture returns the same mesh; `-1` = random |
+| `steps` | integer | sampling steps per stage, 1 to 200; default 12 |
+| `guidance` | number | guidance strength, 0 to 100; default 7.5 (`guidance_scale` and `cfg_scale` are accepted too) |
+| `background` | string | `auto` (default) or `keep`; see The subject |
+| `texture` | boolean | `false` skips the material stages: the bare shape, faster |
+| `model`, `prompt`, `size` | | accepted and ignored |
+| `n` | integer | must be 1 if present |
+
+Response, `200`:
+
+- By default the mesh file: `Content-Type: model/gltf-binary` (.glb),
+  `model/obj` (.obj) or `application/octet-stream` (.ply), with the headers
+  `X-Mesh-Vertices`, `X-Mesh-Triangles`, `X-Mesh-Resolution` and `X-Seed`
+  (the seed that was used, useful with `-1`).
+- With `"response_format": "b64_json"`, JSON in the shape of OpenAI's images
+  response: `{"created": ..., "data": [{"b64_json": "<base64 of the mesh
+  file>"}], "output_format": "glb", "mesh": {"vertices", "triangles",
+  "resolution", "textured", "seed"}}`.
+
+Errors are JSON: `{"error": {"code": 400, "message": "...", "type":
+"invalid_request_error"}}`. `400` = bad request (the message says what),
+`401` = wrong or missing API key, `500` = generation failed (the message says
+why, for example an empty structure: try another seed or a cleaner cut-out),
+`501` = an LLM or speech endpoint was called on this server.
+
+### Other endpoints
+
+| endpoint | meaning |
+| --- | --- |
+| `GET /health` | `{"status":"ok"}` as soon as the port is open. No API key needed |
+| `GET /v1/models` | the model, with `meta.type = "image-to-3d"`, `meta.pipelines`, `meta.output_formats`. No API key needed |
+
+## The subject
+
+The model wants one object, alone, whole and in view. How the object is told
+from its surroundings, in order:
+
+1. `mask`, when one is sent.
+2. The image's alpha channel, when it has one that says anything (an RGBA
+   cut-out). This is the most reliable input.
+3. Otherwise a plain backdrop is removed automatically: the colour that owns
+   the image border, flooded inwards. A studio shot on a flat or gently graded
+   background works.
+4. If there is no plain backdrop, the whole frame is treated as the object and
+   the server logs a warning. The result is then a slab with the picture on
+   it; supply a cut-out or a mask instead.
+
+`"background": "keep"` turns step 3 off.
+
+## Pipelines and timings
+
+| pipeline | what it does | on a 6 GB GPU | notes |
+| --- | --- | --- | --- |
+| `512` | one shape pass, 512³ grid | about 80 s (about 50 s with `texture: false`) | default below 11 GB |
+| `1024` | one shape pass, 1024³ grid | longer than `512` | |
+| `1024_cascade` | a 512 pass, then a refined 1024³ pass; the model's own default | about 11 minutes | default from 11 GB up |
+| `1536_cascade` | the same at 1536³ | longer | |
+
+A stage that does not fit the GPU moves to the CPU on its own and the run
+carries on, so every pipeline completes on a small card; it just takes longer.
+Give HTTP clients a timeout of 30 minutes or more, or none.
+
+## The mesh
+
+- `.glb` — binary glTF 2.0, y-up, inside the unit cube. Attributes `POSITION`,
+  `NORMAL`, `COLOR_0` (the base colour, linear, 16 bit) and the per-vertex
+  metallic and roughness in the application attribute `_METALLIC_ROUGHNESS`.
+  The material carries their means and is double sided. Blender, three.js and
+  game engines open it and show the vertex colours.
+- `.ply` — binary, z-up, with `red green blue alpha` and `metallic roughness`
+  vertex properties.
+- `.obj` — text, z-up, with the `v x y z r g b` vertex colour extension.
+
+The mesh is dense: one vertex per surface voxel, about 0.8 million vertices
+and 1.6 million triangles at 512³ (45 to 60 MB as GLB, around 240 MB for the
+1024 cascade). Colour lives on the vertices; there are no UV coordinates and
+no texture images. For a game, decimate or retopologise it and bake the vertex
+colours to a texture (Blender does both) before importing it into an engine.
+
+## 5. One-shot use without a server
+
+The same command without `--serve` writes one file and exits:
+
+```bash
+ggk -m trellis2-4b-nvfp4.gguf --ref-image sheep.png -o sheep.glb
+```
+
+`-o` may end in `.glb`, `.ply` or `.obj`. `--mask mask.png`, `--mesh-pipeline`,
+`--mesh-background`, `--mesh-no-texture`, `--seed`, `--steps` and `--cfg-scale`
+work as described above.
+
+## Pitfalls
+
+- **Wait for the response.** A request takes from about a minute to many
+  minutes and sends nothing until the mesh is done. Do not treat silence as a
+  failure and do not send the request again: a second request queues behind
+  the first and doubles the wait.
+- **The response is binary.** Write the body to a file; do not parse it as
+  JSON unless the status is not 200 or you asked for `b64_json`.
+- **Use `curl -f`** (or check the status code), so an error is not saved as a
+  `.glb`.
+- **Send the image bytes.** `image` must be a file part or base64; an
+  `http(s)://` URL is rejected with 400.
+- **Upload with `-F image=@file`**, not `-d`. A JSON body must be built in a
+  file and sent with `-d @request.json`.
+- **A cancelled request still runs.** Closing the connection does not stop the
+  generation on the server; the next request waits for it to finish.
+- **Browsers:** the server sends `Access-Control-Allow-Origin: *`, so a web
+  page can call it directly. Use `--api-key` if the port is reachable by
+  anything you do not trust.
+- **Files are large.** A 512 mesh is tens of megabytes, a cascade mesh
+  hundreds; `b64_json` adds a third on top.
+
+## Links
+
+- Model files: https://huggingface.co/gguf-org/trellis2-4b-gguf
+- TRELLIS.2: https://github.com/microsoft/TRELLIS.2
+- ggk: https://github.com/gguf-io/gk
+- gguf-core: https://github.com/calcuis/gguf-core

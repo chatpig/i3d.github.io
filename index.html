@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fafaf9">
+  <title>Image to 3D game asset — TRELLIS.2 in GGUF, on your own GPU</title>
+  <meta name="description" content="Turn one picture into a textured 3D model. TRELLIS.2-4B as a single GGUF file, run locally with ggk or gguf-core behind an OpenAI-style endpoint, POST /v1/images/edits. Drop an image, get a .glb.">
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <!-- for AI agents: the whole guide as plain text / markdown -->
+  <link rel="alternate" type="text/markdown" href="llms-full.txt" title="Complete guide for AI agents">
+  <link rel="help" type="text/plain" href="llms.txt">
+  <link rel="stylesheet" href="styles.css?v=3">
+  <!-- three.js is vendored in vendor/three and loaded only when a model is shown -->
+  <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js" } }</script>
+  <script>
+    // theme before first paint
+    try { var t = localStorage.getItem('i3d-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+<!--
+  AI agents: everything on this page is also available as one plain-text file.
+  Read llms-full.txt (same directory) - install, the model file, server options, the
+  full request reference for POST /v1/images/edits, output formats and pitfalls.
+-->
+<a class="skip" href="#try">Skip to the playground</a>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="#top" aria-label="Image to 3D, home">
+      <img src="logo.svg" alt="" width="28" height="28">
+      <span>image-to-3d</span><span class="brand-tag">game asset</span>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#try">Try it</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="#api">API</a>
+      <a href="#agents">For agents</a>
+    </nav>
+    <div class="top-actions">
+      <span class="conn" id="conn" title="Server status"><i class="dot"></i><span id="conn-text">checking</span></span>
+      <button class="icon-btn" id="btn-theme" type="button" aria-label="Switch colour theme" title="Light / dark">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.5 0-.9-.1-1.4A7 7 0 0 1 12 3z" fill="currentColor"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-settings" type="button" aria-label="Settings" title="Settings: API endpoint, key, model" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        <span class="icon-btn-label">Settings</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ───────────── hero ───────────── -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="kicker">Open image-to-3D · GGUF · runs locally</p>
+        <h1>One picture in,<br>a 3D model out.</h1>
+        <p class="lede">TRELLIS.2-4B as a single GGUF file. Run it on your own GPU, send it an image over an OpenAI-style endpoint, and get back a textured mesh you can open in Blender or a game engine.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#try">Try it in the browser</a>
+          <a class="btn" href="#quickstart">Quickstart</a>
+        </div>
+      </div>
+      <div class="term" aria-label="Quickstart commands">
+        <div class="term-bar"><span></span><span></span><span></span><b>quickstart</b></div>
+<pre><code><span class="c"># 1. runtime</span>
+GGK_CUDA=1 pip install ggk
+
+<span class="c"># 2. serve the model</span>
+ggk -m trellis2-4b-nvfp4.gguf \
+  --serve --port 8888
+
+<span class="c"># 3. image in, mesh out</span>
+curl -f 127.0.0.1:8888/v1/images/edits \
+  -F image=@sheep.png -o sheep.glb</code></pre>
+      </div>
+    </div>
+    <div class="wrap">
+      <dl class="facts">
+        <div><dt>Model</dt><dd>TRELLIS.2-4B <small>image encoder, flows and decoders in one file</small></dd></div>
+        <div><dt>Download</dt><dd>5.65 GB <small>nvfp4, one GGUF</small></dd></div>
+        <div><dt>Hardware</dt><dd>6 GB GPU <small>about 80 s per model at 512³</small></dd></div>
+        <div><dt>Output</dt><dd>glb · ply · obj <small>mesh with per-vertex PBR</small></dd></div>
+        <div><dt>API</dt><dd>OpenAI-style <small>POST /v1/images/edits</small></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ───────────── playground ───────────── -->
+  <section id="try" class="section">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Try it</h2>
+        <p>This page talks to <em>your</em> server, straight from the browser. Your pictures are sent nowhere else.
+          Endpoint: <code id="endpoint-label">http://127.0.0.1:8888/v1/images/edits</code>
+          <button class="link-btn" type="button" data-open-settings>change</button></p>
+      </div>
+
+      <div class="notice" id="offline" hidden>
+        <strong>No server at that address yet.</strong>
+        Start one, then press <button class="link-btn" type="button" id="btn-retry">retry</button>:
+        <pre><code><span class="rt">ggk</span> -m trellis2-4b-nvfp4.gguf --serve --port 8888</code></pre>
+        <span class="notice-detail" id="offline-detail"></span>
+      </div>
+
+      <div class="play">
+        <div class="play-main">
+          <label class="drop" id="drop">
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,.png,.jpg,.jpeg,.webp,.bmp" multiple>
+            <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+            <strong>Drop pictures here</strong>
+            <span>or click to choose, or paste from the clipboard. PNG, JPEG, WebP or BMP. Each picture becomes one 3D model, and generation starts right away.</span>
+          </label>
+
+          <div class="row actions">
+            <button class="btn btn-small" id="btn-stop" type="button" hidden>Stop</button>
+            <label class="check"><input type="checkbox" id="opt-random"> New take each time <span class="muted">(random seed)</span></label>
+            <span class="status" id="status" role="status" aria-live="polite"></span>
+          </div>
+
+          <ol class="queue" id="queue" aria-label="Pictures and their models"></ol>
+
+          <ul class="tips">
+            <li>One object per picture, whole and in view, on a plain backdrop or as a transparent cut-out.</li>
+            <li>A picture with no plain backdrop to remove is modelled frame and all.</li>
+            <li>Pipeline, format, seed and steps are under <button class="link-btn" type="button" data-open-settings>Settings</button>.</li>
+          </ul>
+        </div>
+
+        <div class="play-out" aria-label="3D viewer">
+          <div class="stage" id="stage">
+            <div class="stage-msg" id="stage-empty">
+              <svg viewBox="0 0 24 24" width="44" height="44" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M12 2.8 20 7.4v9.2L12 21.2 4 16.6V7.4z"/><path d="M4 7.4 12 12l8-4.6M12 12v9.2"/></svg>
+              <p>Your 3D model appears here.</p>
+              <p class="muted">Generation runs on your machine: about 80 seconds on a 6 GB GPU, several minutes for the high-resolution pipelines.</p>
+            </div>
+            <div class="stage-msg stage-busy" id="stage-busy" hidden>
+              <svg class="pig" viewBox="0 -5 22 25" width="132" height="150" shape-rendering="crispEdges" aria-hidden="true"><rect class="pig-a pig-steam" x="5" y="-1" width="2" height="1" fill="#c9cedb"/><rect class="pig-a pig-steam" style="animation-delay:-0.5s" x="10" y="-1" width="2" height="1" fill="#c9cedb"/><rect class="pig-a pig-steam" style="animation-delay:-1.0s" x="15" y="-1" width="2" height="1" fill="#c9cedb"/><rect class="pig-a pig-steam" style="animation-delay:-1.3s" x="8" y="-1" width="1" height="1" fill="#c9cedb"/><rect class="pig-a pig-steam" style="animation-delay:-0.25s" x="13" y="-1" width="1" height="1" fill="#c9cedb"/><g class="pig-a pig-head"><rect x="5" y="1" width="2" height="1" fill="#f5a9bb"/><rect x="15" y="1" width="2" height="1" fill="#f5a9bb"/><rect x="4" y="2" width="1" height="1" fill="#f5a9bb"/><rect x="5" y="2" width="2" height="1" fill="#e27f9b"/><rect x="7" y="2" width="1" height="1" fill="#f5a9bb"/><rect x="14" y="2" width="1" height="1" fill="#f5a9bb"/><rect x="15" y="2" width="2" height="1" fill="#e27f9b"/><rect x="17" y="2" width="1" height="1" fill="#f5a9bb"/><rect x="4" y="3" width="1" height="1" fill="#f5a9bb"/><rect x="5" y="3" width="1" height="1" fill="#e27f9b"/><rect x="6" y="3" width="10" height="1" fill="#f5a9bb"/><rect x="16" y="3" width="1" height="1" fill="#e27f9b"/><rect x="17" y="3" width="1" height="1" fill="#f5a9bb"/><rect x="4" y="4" width="14" height="1" fill="#f5a9bb"/><rect x="3" y="5" width="16" height="1" fill="#f5a9bb"/><rect x="3" y="6" width="16" height="1" fill="#f5a9bb"/><rect x="3" y="7" width="16" height="1" fill="#f5a9bb"/><rect x="3" y="8" width="5" height="1" fill="#f5a9bb"/><rect x="8" y="8" width="6" height="1" fill="#e27f9b"/><rect x="14" y="8" width="5" height="1" fill="#f5a9bb"/><rect x="3" y="9" width="5" height="1" fill="#f5a9bb"/><rect x="8" y="9" width="1" height="1" fill="#e27f9b"/><rect x="9" y="9" width="1" height="1" fill="#2b2b36"/><rect x="10" y="9" width="2" height="1" fill="#e27f9b"/><rect x="12" y="9" width="1" height="1" fill="#2b2b36"/><rect x="13" y="9" width="1" height="1" fill="#e27f9b"/><rect x="14" y="9" width="5" height="1" fill="#f5a9bb"/><rect x="3" y="10" width="5" height="1" fill="#f5a9bb"/><rect x="8" y="10" width="6" height="1" fill="#e27f9b"/><rect x="14" y="10" width="5" height="1" fill="#f5a9bb"/><rect x="4" y="11" width="14" height="1" fill="#f5a9bb"/><rect x="4" y="12" width="14" height="1" fill="#f5a9bb"/><rect class="pig-a pig-cheek" x="4" y="9" width="2" height="1" fill="#ee8fa8"/><rect class="pig-a pig-cheek" x="16" y="9" width="2" height="1" fill="#ee8fa8"/><g class="pig-a pig-open"><rect x="6" y="6" width="1" height="2" fill="#2b2b36"/><rect x="15" y="6" width="1" height="2" fill="#2b2b36"/></g><g class="pig-a pig-shut"><rect x="5" y="7" width="3" height="1" fill="#2b2b36"/><rect x="14" y="7" width="3" height="1" fill="#2b2b36"/></g></g><rect class="pig-a pig-drop" x="1" y="3" width="1" height="1" fill="#6fbdf0"/><rect class="pig-a pig-drop" style="animation-delay:-0.35s" x="0" y="5" width="1" height="1" fill="#6fbdf0"/><rect class="pig-a pig-drop" style="animation-delay:-0.7s" x="20" y="3" width="1" height="1" fill="#6fbdf0"/><rect class="pig-a pig-drop" style="animation-delay:-1.05s" x="21" y="5" width="1" height="1" fill="#6fbdf0"/><rect class="pig-a pig-drop" style="animation-delay:-0.2s" x="1" y="6" width="1" height="1" fill="#6fbdf0"/><rect class="pig-a pig-drop" style="animation-delay:-0.9s" x="20" y="6" width="1" height="1" fill="#6fbdf0"/><rect class="pig-a pig-bit left" x="2" y="12" width="1" height="1" fill="var(--accent)"/><rect class="pig-a pig-bit left" style="animation-delay:-0.45s" x="2" y="12" width="1" height="1" fill="var(--accent)"/><rect class="pig-a pig-bit right" style="animation-delay:-0.2s" x="19" y="12" width="1" height="1" fill="var(--accent)"/><rect class="pig-a pig-bit right" style="animation-delay:-0.65s" x="19" y="12" width="1" height="1" fill="var(--accent)"/><rect x="2" y="12" width="18" height="1" fill="#565c6e"/><rect x="2" y="13" width="1" height="1" fill="#565c6e"/><rect x="3" y="13" width="16" height="1" fill="#8b92a6"/><rect x="19" y="13" width="1" height="1" fill="#565c6e"/><rect x="2" y="14" width="1" height="1" fill="#565c6e"/><rect x="3" y="14" width="16" height="1" fill="#8b92a6"/><rect x="19" y="14" width="1" height="1" fill="#565c6e"/><rect x="2" y="15" width="1" height="1" fill="#565c6e"/><rect x="3" y="15" width="16" height="1" fill="#8b92a6"/><rect x="19" y="15" width="1" height="1" fill="#565c6e"/><rect x="2" y="16" width="1" height="1" fill="#565c6e"/><rect x="3" y="16" width="16" height="1" fill="#8b92a6"/><rect x="19" y="16" width="1" height="1" fill="#565c6e"/><rect x="2" y="17" width="18" height="1" fill="#565c6e"/><rect x="1" y="18" width="20" height="1" fill="#565c6e"/><rect class="pig-a pig-logo" x="10" y="14" width="2" height="2" fill="#e8ebf5"/><g class="pig-a pig-hoof"><rect x="0" y="16" width="2" height="2" fill="#f5a9bb"/><rect x="0" y="18" width="2" height="1" fill="#b4506e"/></g><g class="pig-a pig-hoof" style="animation-delay:-0.09s"><rect x="20" y="16" width="2" height="2" fill="#f5a9bb"/><rect x="20" y="18" width="2" height="1" fill="#b4506e"/></g><rect x="0" y="19" width="22" height="1" fill="currentColor"/></svg>
+              <p class="big" id="busy-time">0:00</p>
+              <p id="busy-text">Generating…</p>
+              <div class="bar" id="busy-bar"><i></i></div>
+              <p class="muted" id="busy-hint"></p>
+            </div>
+          </div>
+
+          <div id="out" hidden>
+            <div class="viewbar">
+              <button class="tog" type="button" id="tog-rotate" aria-pressed="true">Rotate</button>
+              <button class="tog" type="button" id="tog-wire" aria-pressed="false">Wireframe</button>
+              <button class="tog" type="button" id="tog-clay" aria-pressed="false">Shape only</button>
+              <button class="tog" type="button" id="btn-reset-view">Reset view</button>
+              <span class="spacer"></span>
+              <a class="btn btn-small btn-primary" id="download" download="model.glb">Download</a>
+            </div>
+            <dl class="meta" id="meta"></dl>
+            <details class="req">
+              <summary>Request <button class="link-btn" type="button" id="btn-copy-curl">copy as curl</button></summary>
+              <pre><code id="req-view"></code></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── quickstart ───────────── -->
+  <section id="quickstart" class="section alt">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Quickstart</h2>
+        <p>Two packages ship the same engine. Pick one; only the command name differs.</p>
+        <div class="seg" role="radiogroup" aria-label="Runtime">
+          <label><input type="radio" name="runtime" value="ggk" checked><span>ggk</span></label>
+          <label><input type="radio" name="runtime" value="gguf"><span>gguf-core</span></label>
+        </div>
+      </div>
+
+      <ol class="steps">
+        <li>
+          <h3>Install the runtime</h3>
+          <p>Python 3.8+. The install compiles the engine: CPU by default, Metal on macOS. This model wants a GPU, so pick a backend.</p>
+<pre><code>GGK_CUDA=1 pip install <span class="pkg">ggk</span>      <span class="c"># NVIDIA</span>
+GGK_HIP=1 pip install <span class="pkg">ggk</span>       <span class="c"># AMD ROCm</span>
+GGK_VULKAN=1 pip install <span class="pkg">ggk</span>    <span class="c"># Vulkan</span>
+pip install <span class="pkg">ggk</span>                 <span class="c"># CPU only: works, but allow most of an hour per model</span></code></pre>
+          <p>The 3D server is in <code>ggk</code> 1.1.4 and newer, and in <code>gguf-core</code> releases after 1.0.2. On Windows cmd, set the variable first: <code>set GGK_CUDA=1</code>, then <code>pip install <span class="pkg">ggk</span></code>.</p>
+        </li>
+        <li>
+          <h3>Get the model file</h3>
+          <p>One GGUF holds the whole pipeline. Download it from <a class="hf-link" href="https://huggingface.co/gguf-org/trellis2-4b-gguf" rel="noopener">huggingface.co/gguf-org/trellis2-4b-gguf</a>.</p>
+          <table class="files">
+            <thead><tr><th>File</th><th>What it is</th><th class="num">Size</th></tr></thead>
+            <tbody>
+              <tr><td><code>trellis2-4b-nvfp4.gguf</code></td><td>TRELLIS.2-4B, NVFP4 weights. The one used on this page.</td><td class="num">5.65 GB</td></tr>
+            </tbody>
+          </table>
+        </li>
+        <li>
+          <h3>Start the server</h3>
+          <p><code>--serve</code> answers over HTTP instead of writing one file and exiting.</p>
+<pre><code><span class="rt">ggk</span> -m trellis2-4b-nvfp4.gguf --serve --port 8888</code></pre>
+          <p>It listens on <code>127.0.0.1:8888</code> at once. Add <code>--api-key &lt;key&gt;</code> to require a key,
+            <code>--host 0.0.0.0</code> to serve your network, <code>--mesh-pipeline 1024_cascade</code> for the full-resolution pipeline (wants about 11 GB, or patience).</p>
+        </li>
+        <li>
+          <h3>Turn a picture into a model</h3>
+<pre><code>curl -f http://127.0.0.1:8888/v1/images/edits \
+  -F image=@sheep.png \
+  --output sheep.glb</code></pre>
+          <p>The answer is the mesh file itself, when it is done: about 80 seconds on a 6 GB laptop GPU. Or skip the server and write one file:
+            <code><span class="rt">ggk</span> -m trellis2-4b-nvfp4.gguf --ref-image sheep.png -o sheep.glb</code></p>
+          <p class="callout"><strong>Keep the <code>-f</code>.</strong> Without it a failed request saves the JSON error message as <code>sheep.glb</code>.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ───────────── API ───────────── -->
+  <section id="api" class="section">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>API</h2>
+        <p>OpenAI has no 3D endpoint, so the server borrows the one with the same shape: the image edit. An image goes in, an asset comes out. OpenAI SDKs work with <code>base_url</code> set to your server.</p>
+      </div>
+
+      <div class="api-grid">
+        <div>
+          <h3><span class="verb">POST</span> /v1/images/edits</h3>
+          <p>A multipart form with the picture as a file part, or a JSON body with the picture as base64. The response is the mesh file itself.</p>
+          <div class="table-scroll">
+          <table class="params">
+            <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>image</code> <span class="req-tag">required</span></td><td>The picture: PNG, JPEG, WebP or BMP. A file part in a form; base64 or a <code>data:</code> URI in JSON. URLs are not fetched.</td></tr>
+              <tr><td><code>mask</code></td><td>The subject mask, white where the object is, the size of the image. Optional: an alpha channel does the same, and a plain backdrop is removed automatically.</td></tr>
+              <tr><td><code>pipeline</code></td><td><code>512</code>, <code>1024</code>, <code>1024_cascade</code>, <code>1536_cascade</code> or <code>auto</code> (default: by GPU memory).</td></tr>
+              <tr><td><code>output_format</code></td><td><code>glb</code> (default), <code>ply</code> or <code>obj</code>.</td></tr>
+              <tr><td><code>response_format</code></td><td>Leave it out for the file. <code>b64_json</code> wraps it in OpenAI's images object: <code>data[0].b64_json</code>.</td></tr>
+              <tr><td><code>seed</code></td><td>Default 42: the same picture returns the same mesh. <code>-1</code> for a new take.</td></tr>
+              <tr><td><code>steps</code>, <code>guidance</code></td><td>Sampling steps per stage (12) and guidance strength (7.5).</td></tr>
+              <tr><td><code>background</code></td><td><code>auto</code> (default) or <code>keep</code>: use the picture as it is, backdrop included.</td></tr>
+              <tr><td><code>texture</code></td><td><code>false</code> skips the material stages: the bare shape, in about two thirds of the time.</td></tr>
+              <tr><td><code>model</code>, <code>prompt</code>, <code>size</code></td><td>Accepted and ignored. <code>n</code> must be 1.</td></tr>
+            </tbody>
+          </table>
+          </div>
+
+          <h3 class="mt">The mesh</h3>
+          <div class="table-scroll">
+          <table class="params">
+            <tbody>
+              <tr><td><code>.glb</code></td><td>Binary glTF 2.0, y-up, inside the unit cube. <code>POSITION</code>, <code>NORMAL</code>, <code>COLOR_0</code> (base colour) and per-vertex metallic and roughness in <code>_METALLIC_ROUGHNESS</code>.</td></tr>
+              <tr><td><code>.ply</code>, <code>.obj</code></td><td>z-up, with vertex colours. PLY also carries <code>metallic</code> and <code>roughness</code> per vertex.</td></tr>
+              <tr><td>Size</td><td>Dense: about 0.8 M vertices and 1.6 M triangles at 512³, 45 to 60 MB as GLB. Colour is per vertex, there are no UVs or texture maps. Decimate and bake in Blender before shipping it in a game.</td></tr>
+              <tr><td>Headers</td><td><code>X-Mesh-Vertices</code>, <code>X-Mesh-Triangles</code>, <code>X-Mesh-Resolution</code>, <code>X-Seed</code>.</td></tr>
+            </tbody>
+          </table>
+          </div>
+
+          <h3 class="mt">Other endpoints</h3>
+          <div class="table-scroll">
+          <table class="params">
+            <tbody>
+              <tr><td><code>GET /health</code></td><td><code>{"status":"ok"}</code> as soon as the port is open.</td></tr>
+              <tr><td><code>GET /v1/models</code></td><td>The model, with <code>meta.type = "image-to-3d"</code>, its pipelines and output formats.</td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+
+        <div class="examples">
+          <div class="tabs" role="tablist" aria-label="Examples">
+            <button role="tab" aria-selected="true" data-tab="ex-form" type="button">curl</button>
+            <button role="tab" aria-selected="false" data-tab="ex-json" type="button">JSON</button>
+            <button role="tab" aria-selected="false" data-tab="ex-python" type="button">Python</button>
+            <button role="tab" aria-selected="false" data-tab="ex-sdk" type="button">OpenAI SDK</button>
+          </div>
+<pre id="ex-form" role="tabpanel"><code>curl -f http://127.0.0.1:8888/v1/images/edits \
+  -F image=@sheep.png \
+  -F pipeline=512 \
+  -F seed=7 \
+  --output sheep.glb
+
+<span class="c"># the bare shape as PLY, with an API key</span>
+curl -f http://127.0.0.1:8888/v1/images/edits \
+  -H "Authorization: Bearer $API_KEY" \
+  -F image=@sheep.png \
+  -F texture=false -F output_format=ply \
+  --output sheep.ply</code></pre>
+<pre id="ex-json" role="tabpanel" hidden><code><span class="c"># request.json: {"image": "&lt;base64 of the file&gt;", "seed": 7}</span>
+python -c "import base64, json; json.dump({'image': base64.b64encode(open('sheep.png','rb').read()).decode(), 'seed': 7}, open('request.json','w'))"
+
+curl -f http://127.0.0.1:8888/v1/images/edits \
+  -H "Content-Type: application/json" \
+  -d @request.json \
+  --output sheep.glb</code></pre>
+<pre id="ex-python" role="tabpanel" hidden><code>import base64, json, urllib.request
+
+image = base64.b64encode(open("sheep.png", "rb").read()).decode()
+req = urllib.request.Request(
+    "http://127.0.0.1:8888/v1/images/edits",
+    data=json.dumps({"image": image, "seed": 7}).encode(),
+    headers={"Content-Type": "application/json"},
+)
+<span class="c"># the answer comes when the mesh is done: allow minutes</span>
+with urllib.request.urlopen(req, timeout=1800) as res, open("sheep.glb", "wb") as f:
+    f.write(res.read())</code></pre>
+<pre id="ex-sdk" role="tabpanel" hidden><code>import base64
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8888/v1",
+                api_key="not-needed", timeout=1800)
+
+result = client.images.edit(
+    model="trellis2",
+    image=open("sheep.png", "rb"),
+    prompt="",
+    response_format="b64_json",
+)
+with open("sheep.glb", "wb") as f:
+    f.write(base64.b64decode(result.data[0].b64_json))</code></pre>
+          <p class="muted">Errors come back as JSON: <code>{"error": {"code": 400, "message": "…"}}</code>. One model is generated at a time; concurrent requests queue.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────── agents ───────────── -->
+  <section id="agents" class="section alt">
+    <div class="wrap agents">
+      <div>
+        <h2>For AI agents</h2>
+        <p>Hand your coding agent one file and it can install the runtime, start the server and turn pictures into models. It is plain text, self-contained, and needs no JavaScript to read.</p>
+        <ul class="agent-files">
+          <li><a href="llms-full.txt"><code>/llms-full.txt</code></a><span>The complete guide: install, the model file, server options, every request field, output formats, timings, pitfalls.</span></li>
+          <li><a href="llms.txt"><code>/llms.txt</code></a><span>The short index, in the <a href="https://llmstxt.org" rel="noopener">llms.txt</a> convention.</span></li>
+        </ul>
+        <div class="row">
+          <button class="btn btn-primary" type="button" id="btn-copy-guide">Copy the guide</button>
+          <a class="btn" href="llms-full.txt">Open as text</a>
+        </div>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><span>Prompt to paste into your agent</span><button class="link-btn" type="button" id="btn-copy-prompt">copy</button></div>
+<pre><code id="agent-prompt">Read <span class="abs-guide">llms-full.txt</span> and follow it:
+install ggk with the GPU backend for this machine, start the
+TRELLIS.2 image-to-3D server on port 8888, then turn
+sheep.png into a 3D model and save it as sheep.glb. Use
+curl -f, and wait for the response: it can take minutes.</code></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <span class="brand"><img src="logo.svg" alt="" width="22" height="22"><span>image-to-3d</span></span>
+    <nav aria-label="Links">
+      <a class="hf-link" href="https://huggingface.co/gguf-org/trellis2-4b-gguf" rel="noopener">Model files</a>
+      <a href="https://github.com/microsoft/TRELLIS.2" rel="noopener">TRELLIS.2</a>
+      <a href="https://github.com/gguf-io/gk" rel="noopener">ggk</a>
+      <a href="https://github.com/calcuis/gguf-core" rel="noopener">gguf-core</a>
+      <a href="llms.txt">llms.txt</a>
+    </nav>
+    <span class="muted">Viewer: three.js, bundled with the page.</span>
+  </div>
+</footer>
+
+<!-- ───────────── settings ───────────── -->
+<dialog id="dlg-settings" aria-labelledby="settings-title">
+  <form id="settings-form" method="dialog">
+    <div class="dlg-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="icon-btn" type="button" data-close aria-label="Close">✕</button>
+    </div>
+    <p class="muted">Where the playground sends pictures, and how models are generated. Saved in this browser only.</p>
+
+    <label class="field-label" for="set-endpoint">API endpoint</label>
+    <input id="set-endpoint" name="endpoint" type="url" inputmode="url" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:8888/v1/images/edits" required>
+    <p class="muted">The image-to-3D URL of your server, or of a gateway in front of it.</p>
+
+    <div class="grid2">
+      <div>
+        <label class="field-label" for="set-key">API key <span class="muted">(optional)</span></label>
+        <input id="set-key" name="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…">
+      </div>
+      <div>
+        <label class="field-label" for="set-model">Model identifier <span class="muted">(optional)</span></label>
+        <input id="set-model" name="model" type="text" autocomplete="off" spellcheck="false" placeholder="trellis2">
+      </div>
+    </div>
+
+    <p class="dlg-sub">Generation · empty = the server's default · 512 fits a 6 GB GPU, the cascades are the full quality</p>
+    <div class="grid2">
+      <div>
+        <label class="field-label" for="set-pipeline">Pipeline</label>
+        <select id="set-pipeline" name="pipeline">
+          <option value="">server default</option>
+          <option value="512">512 — fastest</option>
+          <option value="1024">1024</option>
+          <option value="1024_cascade">1024 cascade</option>
+          <option value="1536_cascade">1536 cascade</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label" for="set-format">Mesh format</label>
+        <select id="set-format" name="format"><option value="glb">glb</option><option value="ply">ply</option><option value="obj">obj</option></select>
+      </div>
+      <div>
+        <label class="field-label" for="set-seed">Seed <span class="muted">(42)</span></label>
+        <input id="set-seed" name="seed" type="number" step="1" placeholder="42">
+      </div>
+      <div>
+        <label class="field-label" for="set-steps">Steps <span class="muted">(12)</span></label>
+        <input id="set-steps" name="steps" type="number" min="1" max="200" step="1" placeholder="12">
+      </div>
+      <div>
+        <label class="field-label" for="set-guidance">Guidance <span class="muted">(7.5)</span></label>
+        <input id="set-guidance" name="guidance" type="number" min="0" max="100" step="0.5" placeholder="7.5">
+      </div>
+      <div>
+        <label class="field-label" for="set-background">Background</label>
+        <select id="set-background" name="background">
+          <option value="auto">auto — remove it</option>
+          <option value="keep">keep — as it is</option>
+        </select>
+      </div>
+    </div>
+
+    <label class="check"><input type="checkbox" id="set-texture" name="texture" checked> Materials: colour, metallic and roughness per vertex (off = bare shape, faster)</label>
+
+    <div class="test-row">
+      <button class="btn btn-small" type="button" id="btn-test">Test connection</button>
+      <span class="status" id="test-result" role="status" aria-live="polite"></span>
+    </div>
+
+    <div class="dlg-foot">
+      <button class="link-btn" type="button" id="btn-reset">Reset to defaults</button>
+      <span class="spacer"></span>
+      <button class="btn" type="button" data-close>Cancel</button>
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="script.js"></script>
+</body>
+</html>

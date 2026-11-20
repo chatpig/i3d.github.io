@@ -1,0 +1,30 @@
+# Image to 3D game asset (TRELLIS.2 in GGUF)
+
+> Open image-to-3D model: one picture in, a textured 3D mesh out. TRELLIS.2-4B
+> packed as a single GGUF file that runs locally on the diffusion engine of the
+> `ggk` or `gguf-core` Python package; `--serve` puts it behind an OpenAI-style
+> endpoint, `POST /v1/images/edits`, which takes the image and answers with the
+> mesh file (.glb, .ply or .obj).
+
+Quick start:
+
+```bash
+GGK_CUDA=1 pip install ggk     # or: GGK_CUDA=1 pip install gguf-core  (command `gguf` instead of `ggk`)
+ggk -m trellis2-4b-nvfp4.gguf --serve --port 8888
+curl -f http://127.0.0.1:8888/v1/images/edits -F image=@sheep.png --output sheep.glb
+```
+
+The response arrives when the mesh is done: about 80 seconds on a 6 GB GPU,
+minutes for the high-resolution pipelines. Wait for it; do not retry early.
+
+## Docs
+
+- [Complete guide](llms-full.txt): install, the model file, server options, every request field, output formats, timings, pitfalls. Self-contained; read this one.
+- [Website](index.html): the same documentation for people, plus a browser playground with a 3D viewer.
+
+## Sources
+
+- [Model files](https://huggingface.co/gguf-org/trellis2-4b-gguf): the TRELLIS.2 pipeline as one GGUF
+- [TRELLIS.2](https://github.com/microsoft/TRELLIS.2): the original model
+- [ggk](https://github.com/gguf-io/gk): the runtime
+- [gguf-core](https://github.com/calcuis/gguf-core): the same runtime under the `gguf` command
