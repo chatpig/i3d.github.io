@@ -235,6 +235,8 @@ function fmtCount(n) {
 const IMAGE_TYPES = /^image\/(png|jpeg|webp|bmp)$/;
 const IMAGE_NAMES = /\.(png|jpe?g|webp|bmp)$/i;
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
+// a model from disk is not generated: it is opened in the viewer, to look at or to edit
+const MODEL_NAMES = /\.(glb|ply|obj)$/i;
 
 // The form fields of a request, as the settings describe it. The picture itself is the `image` file part.
 function buildFields() {
@@ -360,7 +362,7 @@ function renderQueue() {
       state.classList.add('bad');
     } else {
       const r = job.result;
-      state.textContent = [r.info.triangles ? fmtCount(r.info.triangles) + ' triangles' : '', fmtBytes(r.blob.size), fmtSeconds(job.took)].filter(Boolean).join(' · ');
+      state.textContent = [r.info.triangles ? fmtCount(r.info.triangles) + ' triangles' : '', fmtBytes(r.blob.size), job.local ? 'opened from disk' : fmtSeconds(job.took)].filter(Boolean).join(' · ');
       state.classList.add('ok');
     }
     text.append(name, state);
@@ -387,9 +389,25 @@ function renderQueue() {
 function addFiles(files) {
   let added = 0;
   let skipped = '';
+  let opened = null;
   for (const file of files) {
+    if (MODEL_NAMES.test(file.name)) {
+      const format = file.name.split('.').pop().toLowerCase();
+      opened = {
+        id: nextId++,
+        file,
+        thumb: 'logo.svg',
+        stem: file.name.replace(/\.[^.]+$/, '') || 'model',
+        status: 'done',
+        local: true,
+        format,
+        result: { blob: file, format, info: {}, url: URL.createObjectURL(file) },
+      };
+      jobs.push(opened);
+      continue;
+    }
     if (!IMAGE_TYPES.test(file.type) && !IMAGE_NAMES.test(file.name)) {
-      skipped = `${file.name || 'That file'} is not a PNG, JPEG, WebP or BMP picture.`;
+      skipped = `${file.name || 'That file'} is not a PNG, JPEG, WebP or BMP picture, nor a .glb, .ply or .obj model.`;
       continue;
     }
     if (file.size > MAX_IMAGE_BYTES) {
@@ -407,11 +425,12 @@ function addFiles(files) {
     added++;
   }
   if (skipped) setStatus(skipped, 'bad');
-  else if (added) setStatus('');
+  else if (added || opened) setStatus('');
   if (added) {
     renderQueue();
     pump();
   }
+  if (opened) showJob(opened);
 }
 
 function removeJob(job) {
@@ -591,13 +610,16 @@ function showMeta(items) {
 
 async function showJob(job) {
   const r = job.result;
+  keepEdits();
+  setEditStatus('');
   shownId = job.id;
   renderQueue();
 
   $('download').href = r.url;
   $('download').download = `${job.stem}.${r.format}`;
   $('download').textContent = `Download .${r.format}`;
-  $('req-view').textContent = asCurl(job);
+  document.querySelector('.req').hidden = !!job.local; // no request was made for a model from disk
+  $('req-view').textContent = job.local ? '' : asCurl(job);
   $('out').hidden = false;
   $('stage-empty').hidden = true;
   $('out').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -609,7 +631,8 @@ async function showJob(job) {
     if (vertices) items.push(['vertices', fmtCount(vertices)]);
     if (triangles) items.push(['triangles', fmtCount(triangles)]);
     if (r.info.resolution) items.push(['grid', r.info.resolution + '³']);
-    items.push(['size', fmtBytes(r.blob.size)], ['took', fmtSeconds(job.took)]);
+    items.push(['size', fmtBytes(r.blob.size)]);
+    if (!job.local) items.push(['took', fmtSeconds(job.took)]);
     if (r.info.seed !== null && r.info.seed !== undefined) items.push(['seed', String(r.info.seed)]);
     if (r.info.cost !== null && r.info.cost !== undefined) items.push(['cost', '$' + r.info.cost]);
     showMeta(items);
@@ -627,8 +650,12 @@ async function showJob(job) {
   }
   try {
     const v = await getViewer();
-    const counted = await v.show(await r.blob.arrayBuffer(), r.format);
-    if (shownId === job.id) meta(counted);
+    // a model that was edited comes back as it was left
+    const counted = job.edited ? await v.show(await job.edited.arrayBuffer(), 'glb') : await v.show(await r.blob.arrayBuffer(), r.format);
+    if (shownId === job.id) {
+      if (!job.edited) meta(counted);
+      if (editing) await getEditor();
+    }
   } catch (e) {
     console.error(e);
     // the model is fine either way: it can still be downloaded
@@ -662,6 +689,183 @@ $('btn-retry').addEventListener('click', async () => {
     renderQueue();
     pump();
   }
+});
+
+// ───────────────────────────── the editor: changes to the model in the viewer
+
+let editor = null; // editor.js, loaded the first time Edit is opened
+let editing = false; // the Edit panel is open
+let editBusy = false;
+
+const shownJob = () => jobs.find((j) => j.id === shownId);
+
+function setEditStatus(text, cls = '') {
+  const el = $('ed-status');
+  el.className = 'status ' + cls;
+  el.textContent = text;
+}
+
+function showEditState(state) {
+  const none = !state.selected;
+  $('ed-hint').textContent =
+    `${fmtCount(state.vertices)} vertices, ${fmtCount(state.triangles)} triangles. ` +
+    (none ? 'Nothing selected: Surface and Fill work on the whole model.' : `${state.selected.toLocaleString()} vertices selected: Region, Surface and Fill work on them.`);
+  $('ed-crop').disabled = $('ed-delete').disabled = $('ed-grow').disabled = none;
+  $('ed-undo').disabled = !state.canUndo;
+  $('ed-redo').disabled = !state.canRedo;
+  const job = shownJob();
+  $('ed-reset').disabled = !state.dirty && !(job && job.edited);
+}
+
+// The editor, holding the model the viewer shows; null when there is none.
+async function getEditor() {
+  if (!viewer || !viewer.model) return null;
+  if (!editor) {
+    const { Editor } = await import('./editor.js');
+    if (!editor) editor = new Editor(viewer, showEditState);
+    editor.brushSize = Number($('ed-brush').value);
+    editor.tolerance = Number($('ed-tolerance').value) / 100;
+    editor.visibleOnly = $('ed-visible').checked;
+  }
+  if (!viewer.model) return null;
+  if (!editor.active) {
+    if (!editor.open()) return null;
+    setTool(currentTool());
+  }
+  return editor;
+}
+
+// Before another model takes the viewer: the edits made to this one stay with it.
+function keepEdits() {
+  const job = shownJob();
+  if (job && editor && editor.active && editor.dirty) job.edited = editor.exportBlob();
+}
+
+// Runs one operation of the editor, with a word in the status line before and after.
+async function edit(label, fn) {
+  if (editBusy) return;
+  editBusy = true;
+  try {
+    const ed = await getEditor();
+    if (!ed) {
+      setEditStatus('There is no model in the viewer to edit.', 'bad');
+      return;
+    }
+    if (label) {
+      setEditStatus(label, 'spin');
+      await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0))); // let the label show
+    }
+    const said = fn(ed);
+    if (said !== undefined) setEditStatus(said, 'ok');
+  } catch (e) {
+    console.error(e);
+    setEditStatus(e instanceof RangeError ? 'Not enough memory for that on this model.' : 'That did not work: ' + e.message, 'bad');
+  } finally {
+    editBusy = false;
+  }
+}
+
+const currentTool = () => (document.querySelector('#editor [data-tool][aria-pressed="true"]') || {}).dataset.tool || 'orbit';
+
+function setTool(tool) {
+  $$('#editor [data-tool]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tool === tool)));
+  $('ed-brush-opt').hidden = tool !== 'brush';
+  $('ed-box-opt').hidden = tool !== 'box';
+  $('ed-wand-opt').hidden = tool !== 'wand';
+  if (tool !== 'orbit') {
+    // a model that turns by itself cannot be drawn on
+    $('tog-rotate').setAttribute('aria-pressed', 'false');
+    if (viewer) viewer.setAutoRotate(false);
+    setEditStatus(
+      tool === 'brush' ? 'Drag over the model to select. Shift-drag takes away. The right button turns the model.'
+        : tool === 'box' ? 'Drag a rectangle to select. Shift-drag takes away. The right button turns the model.'
+          : 'Click a colour to select its area. Shift-click takes away. The right button turns the model.'
+    );
+  } else if (/right button/.test($('ed-status').textContent)) setEditStatus('');
+  if (editor) editor.setTool(tool);
+}
+
+$('tog-edit').addEventListener('click', async () => {
+  editing = $('tog-edit').getAttribute('aria-pressed') !== 'true';
+  $('tog-edit').setAttribute('aria-pressed', String(editing));
+  $('editor').hidden = !editing;
+  if (!editing) {
+    // the edits stay; only the selecting stops
+    setTool('orbit');
+    return;
+  }
+  if (viewerFailed) {
+    setEditStatus('The editor needs the 3D preview, which could not start in this browser.', 'bad');
+    return;
+  }
+  setEditStatus('Preparing the model…', 'spin');
+  await edit('', () => '');
+  $('editor').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+});
+
+$$('#editor [data-tool]').forEach((b) =>
+  b.addEventListener('click', async () => {
+    await getEditor();
+    setTool(b.dataset.tool);
+  })
+);
+$('ed-brush').addEventListener('input', (e) => editor && (editor.brushSize = Number(e.target.value)));
+$('ed-tolerance').addEventListener('input', (e) => editor && (editor.tolerance = Number(e.target.value) / 100));
+$('ed-visible').addEventListener('change', (e) => editor && (editor.visibleOnly = e.target.checked));
+
+$('ed-all').addEventListener('click', () => edit('', (ed) => ed.selectAll()));
+$('ed-none').addEventListener('click', () => edit('', (ed) => ed.selectNone()));
+$('ed-invert').addEventListener('click', () => edit('', (ed) => ed.invertSelection()));
+$('ed-grow').addEventListener('click', () => edit('', (ed) => ed.growSelection()));
+
+$('ed-crop').addEventListener('click', () => edit('Cropping…', (ed) => ed.crop()));
+$('ed-delete').addEventListener('click', () => edit('Deleting…', (ed) => ed.remove()));
+$('ed-paint').addEventListener('click', () => edit('Colouring…', (ed) => ed.paint($('ed-color').value)));
+$('ed-smooth').addEventListener('click', () => edit('Smoothing…', (ed) => ed.smooth(Number($('ed-smooth-n').value))));
+
+// metallic, roughness: what the look is made of
+const STYLES = { plastic: [0, 0.3, 'Plastic'], metal: [1, 0.25, 'Metal'], matte: [0, 0.9, 'Matte'] };
+$$('#editor [data-style]').forEach((b) =>
+  b.addEventListener('click', () => edit('Changing the material…', (ed) => ed.setMaterial(...STYLES[b.dataset.style])))
+);
+
+// one press moves the surface by 0.4 % of the model's size
+$('ed-fill-out').addEventListener('click', () => edit('Filling out…', (ed) => ed.inflate(0.004)));
+$('ed-slim').addEventListener('click', () => edit('Slimming…', (ed) => ed.inflate(-0.004)));
+$('ed-fill-gaps').addEventListener('click', () => edit('Filling the gaps…', (ed) => ed.fillGaps(Number($('ed-gap-size').value))));
+$('ed-fill-centre').addEventListener('click', () => edit('Filling the centre…', (ed) => ed.fillCentre()));
+
+$('ed-undo').addEventListener('click', () => edit('', (ed) => (ed.undo(), 'Undone.')));
+$('ed-redo').addEventListener('click', () => edit('', (ed) => (ed.redo(), 'Redone.')));
+$('ed-reset').addEventListener('click', () => {
+  const job = shownJob();
+  if (!job || editBusy || !confirm('Discard every edit and go back to the model as it was?')) return;
+  job.edited = null;
+  if (editor) editor.dirty = false;
+  showJob(job).then(() => setEditStatus('Back to the original.', 'ok'));
+});
+
+$('ed-save').addEventListener('click', () =>
+  edit('Writing the file…', (ed) => {
+    const job = shownJob();
+    const blob = ed.exportBlob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${job ? job.stem : 'model'}-edited.glb`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    return `Saved ${a.download}, ${fmtBytes(blob.size)}.`;
+  })
+);
+
+document.addEventListener('keydown', (e) => {
+  if (!editing || !(e.ctrlKey || e.metaKey) || e.altKey || e.target.closest('input, textarea, select, dialog')) return;
+  const key = e.key.toLowerCase();
+  if (key !== 'z' && key !== 'y') return;
+  e.preventDefault();
+  $(key === 'y' || e.shiftKey ? 'ed-redo' : 'ed-undo').click();
 });
 
 // ───────────────────────────── docs: runtime switch, tabs, copy buttons

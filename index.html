@@ -11,7 +11,7 @@
   <!-- for AI agents: the whole guide as plain text / markdown -->
   <link rel="alternate" type="text/markdown" href="llms-full.txt" title="Complete guide for AI agents">
   <link rel="help" type="text/plain" href="llms.txt">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=4">
   <!-- three.js is vendored in vendor/three and loaded only when a model is shown -->
   <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js" } }</script>
   <script>
@@ -111,7 +111,7 @@ curl -f 127.0.0.1:8888/v1/images/edits \
       <div class="play">
         <div class="play-main">
           <label class="drop" id="drop">
-            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,.png,.jpg,.jpeg,.webp,.bmp" multiple>
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,.png,.jpg,.jpeg,.webp,.bmp,.glb,.ply,.obj" multiple>
             <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
             <strong>Drop pictures here</strong>
             <span>or click to choose, or paste from the clipboard. PNG, JPEG, WebP or BMP. Each picture becomes one 3D model, and generation starts right away.</span>
@@ -128,6 +128,7 @@ curl -f 127.0.0.1:8888/v1/images/edits \
           <ul class="tips">
             <li>One object per picture, whole and in view, on a plain backdrop or as a transparent cut-out.</li>
             <li>A picture with no plain backdrop to remove is modelled frame and all.</li>
+            <li>A model can be changed after it arrives: press <strong>Edit</strong> under the viewer. A <code>.glb</code> dropped here opens for editing too.</li>
             <li>Pipeline, format, seed and steps are under <button class="link-btn" type="button" data-open-settings>Settings</button>.</li>
           </ul>
         </div>
@@ -154,8 +155,76 @@ curl -f 127.0.0.1:8888/v1/images/edits \
               <button class="tog" type="button" id="tog-wire" aria-pressed="false">Wireframe</button>
               <button class="tog" type="button" id="tog-clay" aria-pressed="false">Shape only</button>
               <button class="tog" type="button" id="btn-reset-view">Reset view</button>
+              <button class="tog" type="button" id="tog-edit" aria-pressed="false" aria-controls="editor">Edit</button>
               <span class="spacer"></span>
               <a class="btn btn-small btn-primary" id="download" download="model.glb">Download</a>
+            </div>
+            <div class="editor" id="editor" aria-label="Model editor" hidden>
+              <div class="ed-row">
+                <span class="ed-label">Select</span>
+                <div class="ed-tools">
+                  <button class="tog" type="button" data-tool="orbit" aria-pressed="true" title="Drag turns the model">Turn</button>
+                  <button class="tog" type="button" data-tool="brush" aria-pressed="false" title="Paint over the part to select">Brush</button>
+                  <button class="tog" type="button" data-tool="box" aria-pressed="false" title="Drag a rectangle around the part to select">Box</button>
+                  <button class="tog" type="button" data-tool="wand" aria-pressed="false" title="Click a colour: selects the connected area of that colour">Wand</button>
+                  <label class="ed-opt" id="ed-brush-opt" hidden>size <input type="range" id="ed-brush" min="4" max="90" value="24"></label>
+                  <label class="ed-opt" id="ed-box-opt" hidden><input type="checkbox" id="ed-visible" checked> front side only</label>
+                  <label class="ed-opt" id="ed-wand-opt" hidden>tolerance <input type="range" id="ed-tolerance" min="2" max="100" value="20"></label>
+                  <span class="ed-break"></span>
+                  <button class="tog" type="button" id="ed-all">All</button>
+                  <button class="tog" type="button" id="ed-invert">Invert</button>
+                  <button class="tog" type="button" id="ed-grow" title="Widen the selection by one ring of triangles">Grow</button>
+                  <button class="tog" type="button" id="ed-none">Clear</button>
+                </div>
+              </div>
+              <div class="ed-row">
+                <span class="ed-label">Region</span>
+                <div class="ed-tools">
+                  <button class="tog" type="button" id="ed-crop" title="Keep the selected part, remove the rest">Crop to selection</button>
+                  <button class="tog" type="button" id="ed-delete" title="Remove the selected part">Delete selection</button>
+                  <span class="ed-break"></span>
+                  <input type="color" id="ed-color" value="#e2573d" aria-label="Colour">
+                  <button class="tog" type="button" id="ed-paint">Apply colour</button>
+                </div>
+              </div>
+              <div class="ed-row">
+                <span class="ed-label">Surface</span>
+                <div class="ed-tools">
+                  <button class="tog" type="button" id="ed-smooth" title="Smooth the surface without shrinking it">Smooth</button>
+                  <label class="ed-opt">strength <input type="range" id="ed-smooth-n" min="1" max="30" value="6"></label>
+                  <span class="ed-break"></span>
+                  <button class="tog" type="button" data-style="plastic" title="Glossy, not metallic">Plastic</button>
+                  <button class="tog" type="button" data-style="metal" title="Polished metal, tinted by the colour">Metal</button>
+                  <button class="tog" type="button" data-style="matte" title="Rough, no shine">Matte</button>
+                </div>
+              </div>
+              <div class="ed-row">
+                <span class="ed-label">Fill</span>
+                <div class="ed-tools">
+                  <button class="tog" type="button" id="ed-fill-out" title="Push the surface outwards a little: thin parts get fuller. Press again for more">Fill out</button>
+                  <button class="tog" type="button" id="ed-slim" title="Pull the surface inwards a little">Slim</button>
+                  <span class="ed-break"></span>
+                  <button class="tog" type="button" id="ed-fill-gaps" title="Close the holes in the surface">Fill gaps</button>
+                  <label class="ed-opt">up to
+                    <select id="ed-gap-size">
+                      <option value="0.03">small</option>
+                      <option value="0.12" selected>medium</option>
+                      <option value="1">any size</option>
+                    </select>
+                  </label>
+                  <span class="ed-break"></span>
+                  <button class="tog" type="button" id="ed-fill-centre" title="Make it one closed surface: close every opening and remove what is hidden inside">Fill centre</button>
+                </div>
+              </div>
+              <p class="ed-hint" id="ed-hint">Region, Surface and Fill work on the selection, or on the whole model when nothing is selected.</p>
+              <p class="status" id="ed-status" role="status" aria-live="polite"></p>
+              <div class="ed-foot">
+                <button class="tog" type="button" id="ed-undo" disabled>Undo</button>
+                <button class="tog" type="button" id="ed-redo" disabled>Redo</button>
+                <button class="tog" type="button" id="ed-reset" disabled title="Back to the model as it was generated">Reset</button>
+                <span class="spacer"></span>
+                <button class="btn btn-small btn-primary" type="button" id="ed-save">Save as new .glb</button>
+              </div>
             </div>
             <dl class="meta" id="meta"></dl>
             <details class="req">

@@ -181,6 +181,20 @@ export class Viewer {
     return { vertices, triangles: Math.floor(triangles) };
   }
 
+  // Puts `object` in the place of the model's content, where it stood and at
+  // the size it was shown: the editor's mesh instead of the loaded one.
+  swap(object) {
+    for (const child of [...this.model.children]) {
+      this.model.remove(child);
+      dispose(child);
+    }
+    object.traverse((child) => {
+      if (child.isMesh) child.userData.material = child.material;
+    });
+    this.model.add(object);
+    this.applyMaterials();
+  }
+
   applyMaterials() {
     if (!this.model) return;
     this.clayMaterial.wireframe = this.wireframe;
